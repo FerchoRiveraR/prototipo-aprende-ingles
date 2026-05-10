@@ -79,6 +79,12 @@ const Gamification = {
         profile.streak = 1;
       }
       profile.lastActiveDay = today;
+
+      // Mantener historial de días activos (máx 14) para la racha visual del Dashboard.
+      const days = Array.isArray(profile.activeDays) ? profile.activeDays.slice() : [];
+      if (!days.includes(today)) days.push(today);
+      const cutoff = dayStamp(Date.now() - 13 * MS_PER_DAY);
+      profile.activeDays = days.filter((d) => d >= cutoff).sort();
     }
 
     await DB.updateProfile(profile);

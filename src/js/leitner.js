@@ -27,13 +27,40 @@ const Leitner = {
   /**
    * Selecciona el próximo ejercicio a presentar al estudiante.
    * Prioriza ejercicios vencidos en cajas más bajas (más necesitados de refuerzo).
-   * @returns {Promise<Object|null>} la lección o null si no hay nada que revisar
+   *
+   * Si se pasa { topicId }, restringe la selección a los ejercicios de ese topic.
+   * Cuando todos los ejercicios del topic están al día (no due), relaja el filtro
+   * de "vencido" y devuelve el ejercicio en la caja más baja del topic, para que
+   * el estudiante pueda seguir practicando bajo demanda. Sin filtro de topic, el
+   * comportamiento original se preserva (devuelve null si no hay nada vencido).
+   *
+   * @param {Object} [opts]
+   * @param {string} [opts.topicId] — restringir a un topic específico
+   * @returns {Promise<Object|null>}
    */
-  async selectNextLesson() {
-    const all = await DB.getAllProgress();
+  async selectNextLesson(opts) {
+    const topicId = opts && opts.topicId ? opts.topicId : null;
+    const allProgress = await DB.getAllProgress();
     const now = Date.now();
 
-    const due = all.filter((p) => (p.nextReview || 0) <= now);
+    let candidates = allProgress;
+
+    if (topicId) {
+      const allLessons = await DB.getAllLessons();
+      const topicLessonIds = new Set(
+        allLessons.filter((l) => l.topicId === topicId).map((l) => l.id)
+      );
+      if (topicLessonIds.size === 0) return null;
+      candidates = allProgress.filter((p) => topicLessonIds.has(p.lessonId));
+    }
+
+    let due = candidates.filter((p) => (p.nextReview || 0) <= now);
+
+    // Sesión por topic: si nada está vencido, practicar igual con el de caja más baja.
+    if (due.length === 0 && topicId) {
+      due = candidates.slice();
+    }
+
     if (due.length === 0) return null;
 
     due.sort((a, b) => {

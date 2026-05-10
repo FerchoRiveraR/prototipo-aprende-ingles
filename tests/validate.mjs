@@ -51,14 +51,19 @@ async function waitForSW(page) {
 
 async function readIndexedDBStats(page) {
   return page.evaluate(async () => {
-    const open = (name, version) => new Promise((resolve, reject) => {
-      const req = indexedDB.open(name, version);
+    const open = () => new Promise((resolve, reject) => {
+      // Sin versión => se abre con la actual del navegador (la app ya inicializó la v2).
+      const req = indexedDB.open('AprendeIngles');
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
-    const db = await open('AprendeIngles', 1);
+    const db = await open();
     const stats = {};
-    for (const storeName of ['lessons', 'progress', 'settings', 'achievements']) {
+    for (const storeName of ['lessons', 'topics', 'progress', 'settings', 'achievements']) {
+      if (!db.objectStoreNames.contains(storeName)) {
+        stats[storeName] = null;
+        continue;
+      }
       const tx = db.transaction(storeName, 'readonly');
       const store = tx.objectStore(storeName);
       stats[storeName] = await new Promise((resolve, reject) => {
@@ -72,10 +77,44 @@ async function readIndexedDBStats(page) {
   });
 }
 
+async function readIntegrity(page) {
+  return page.evaluate(async () => {
+    const open = () => new Promise((resolve, reject) => {
+      const req = indexedDB.open('AprendeIngles');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    const db = await open();
+    const getAll = (storeName) => new Promise((res, rej) => {
+      const tx = db.transaction(storeName, 'readonly');
+      const r = tx.objectStore(storeName).getAll();
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    const [topics, lessons] = await Promise.all([getAll('topics'), getAll('lessons')]);
+    db.close();
+    const lessonIds = new Set(lessons.map((l) => l.id));
+    const topicIds = new Set(topics.map((t) => t.id));
+    const orphanLessons = lessons.filter((l) => l.topicId && !topicIds.has(l.topicId));
+    const danglingRefs = [];
+    for (const t of topics) {
+      for (const lid of (t.lessonIds || [])) {
+        if (!lessonIds.has(lid)) danglingRefs.push(`${t.id}→${lid}`);
+      }
+    }
+    return {
+      topicCount: topics.length,
+      lessonCount: lessons.length,
+      orphanLessonCount: orphanLessons.length,
+      danglingRefs
+    };
+  });
+}
+
 async function getProfile(page) {
   return page.evaluate(async () => {
     const open = () => new Promise((resolve, reject) => {
-      const req = indexedDB.open('AprendeIngles', 1);
+      const req = indexedDB.open('AprendeIngles');
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
@@ -94,12 +133,12 @@ async function getProfile(page) {
 
 async function answerLesson(page, mode /* 'correct' | 'incorrect' */) {
   // Espera que aparezcan los botones de opción
-  await page.waitForSelector('.btn-option', { timeout: 5000 });
+  await page.waitForSelector('.option-card', { timeout: 5000 });
 
   const correctIndex = await page.evaluate(async () => {
     // Tomar el ID del primer ejercicio en pantalla (no expuesto en DOM, leemos el primero pendiente desde DB)
     const open = () => new Promise((resolve, reject) => {
-      const req = indexedDB.open('AprendeIngles', 1);
+      const req = indexedDB.open('AprendeIngles');
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
@@ -126,7 +165,7 @@ async function answerLesson(page, mode /* 'correct' | 'incorrect' */) {
 
   if (correctIndex < 0) throw new Error('No se pudo determinar la respuesta correcta');
 
-  const buttons = await page.$$('.btn-option');
+  const buttons = await page.$$('.option-card');
   let targetIdx;
   if (mode === 'correct') {
     targetIdx = correctIndex;
@@ -135,7 +174,7 @@ async function answerLesson(page, mode /* 'correct' | 'incorrect' */) {
     targetIdx = (correctIndex + 1) % buttons.length;
   }
   await buttons[targetIdx].click();
-  await page.waitForSelector('.lesson-feedback', { timeout: 5000 });
+  await page.waitForSelector('.lesson-feedback-panel', { timeout: 5000 });
 }
 
 async function navTo(page, view) {
@@ -167,17 +206,50 @@ async function main() {
   // Esperar que app.js inicialice IndexedDB
   await page.waitForFunction(() => {
     return document.querySelector('#stat-points') !== null
-      && document.querySelectorAll('.box').length === 5;
+      && document.querySelector('#btn-next-step') !== null;
   }, null, { timeout: 5000 });
 
   // ─── 2. Estado inicial: dashboard, IndexedDB poblada ───────────
   console.log('\n2. Estado inicial');
   const stats = await readIndexedDBStats(page);
-  record('IndexedDB.lessons tiene 10 ejercicios', stats.lessons === 10, `count=${stats.lessons}`);
-  record('IndexedDB.progress tiene 10 entradas', stats.progress === 10, `count=${stats.progress}`);
+  record('IndexedDB.lessons tiene >= 25 ejercicios', stats.lessons >= 25, `count=${stats.lessons}`);
+  record('IndexedDB.topics tiene >= 12 temas', stats.topics >= 12, `count=${stats.topics}`);
+  record('IndexedDB.progress = lessons (1:1)', stats.progress === stats.lessons, `progress=${stats.progress} lessons=${stats.lessons}`);
   record('IndexedDB.settings tiene perfil', stats.settings === 1, `count=${stats.settings}`);
 
+  // Integridad referencial topics ↔ lessons
+  const integrity = await readIntegrity(page);
+  record('Sin lecciones huérfanas (topicId apunta a topic existente)', integrity.orphanLessonCount === 0, `huérfanas=${integrity.orphanLessonCount}`);
+  record('Sin referencias rotas (topic.lessonIds → lesson real)', integrity.danglingRefs.length === 0, integrity.danglingRefs.length ? integrity.danglingRefs.join(', ') : 'OK');
+
   await shoot(page, '01-dashboard-inicial.png');
+
+  // ─── 2b. Flujo Aprender → Topic → Practicar ───────────────────
+  console.log('\n2b. Aprender (índice + topic detail + práctica filtrada)');
+  await navTo(page, 'learn');
+  await page.waitForSelector('.topic-card', { timeout: 5000 });
+  const topicCount = await page.$$eval('.topic-card', (els) => els.length);
+  record('Índice "Aprender" muestra al menos 12 tarjetas', topicCount >= 12, `cards=${topicCount}`);
+  await shoot(page, '07-aprender-indice.png');
+
+  await page.click('.topic-card[data-topic-id="verb-to-be"]');
+  await page.waitForSelector('.subject-grid', { timeout: 5000 });
+  const subjectCards = await page.$$eval('.subject-grid .subject-card', (els) => els.length);
+  record('Topic "Verb to be" muestra 3 tarjetas por sujeto', subjectCards === 3, `cards=${subjectCards}`);
+  const hasUse = await page.$('.use-prose');
+  const hasExamples = await page.$('.examples-list');
+  record('Topic incluye sección "Use"', !!hasUse);
+  record('Topic incluye sección "Examples"', !!hasExamples);
+  await shoot(page, '08-topic-verb-to-be.png');
+
+  await page.click('#btn-practice');
+  await page.waitForSelector('.lesson-question', { timeout: 5000 });
+  const questionText = await page.$eval('.lesson-question', (el) => el.textContent);
+  const isVerbToBe = /\b(am|is|are|be)\b/i.test(questionText) || questionText.includes('___');
+  record('Práctica filtrada muestra ejercicio de verb-to-be', isVerbToBe, `pregunta="${questionText.slice(0, 60)}"`);
+  await shoot(page, '09-practica-filtrada.png');
+  // Volver al dashboard antes de continuar el flujo original
+  await navTo(page, 'dashboard');
 
   // ─── 3. Ir a lección y responder bien ──────────────────────────
   console.log('\n3. Lección — respuesta correcta');
@@ -194,7 +266,7 @@ async function main() {
 
   // ─── 4. Siguiente ejercicio + responder mal ────────────────────
   console.log('\n4. Lección — respuesta incorrecta');
-  await page.click('.lesson-feedback + button, button:has-text("Siguiente ejercicio")');
+  await page.click('#btn-continue');
   await page.waitForSelector('.lesson-question', { timeout: 5000 });
   await answerLesson(page, 'incorrect');
   await shoot(page, '04-leccion-incorrecta.png');
@@ -202,7 +274,7 @@ async function main() {
   // ─── 5. Volver al dashboard, verificar progreso ────────────────
   console.log('\n5. Dashboard con progreso');
   await navTo(page, 'dashboard');
-  await page.waitForSelector('.box-count', { timeout: 5000 });
+  await page.waitForSelector('.topic-progress-bar', { timeout: 5000 });
   await shoot(page, '05-dashboard-progreso.png');
 
   // ─── 6. Perfil con logros ──────────────────────────────────────
@@ -284,6 +356,9 @@ async function main() {
     '- 04-leccion-incorrecta.png',
     '- 05-dashboard-progreso.png',
     '- 06-perfil-logros.png',
+    '- 07-aprender-indice.png',
+    '- 08-topic-verb-to-be.png',
+    '- 09-practica-filtrada.png',
     '- 11-banner-sin-conexion.png',
     '- 14-network-offline.png',
     '- 15-app-funcionando-offline.png',

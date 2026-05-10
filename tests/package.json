@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Script de validación y captura automática de evidencias del prototipo con Playwright",
   "scripts": {
-    "validate": "node validate.mjs"
+    "validate": "node validate.mjs",
+    "responsive": "node responsive.mjs"
   },
   "devDependencies": {
     "playwright": "^1.48.0"

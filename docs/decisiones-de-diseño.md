@@ -76,11 +76,52 @@ Este documento explicita las decisiones técnicas y de UI adoptadas durante la c
 - **Decisión:** al pulsar una opción, esta se colorea (verde correcto, rojo incorrecto), todas las opciones se deshabilitan y aparece una explicación pedagógica.
 - **Justificación:** el feedback inmediato es uno de los pilares del aprendizaje activo y del sistema Leitner. La lectura de Granollers (2021) lo describe como propiedad esencial de un prototipo interactivo.
 
+### 2.7 Topics como entidad: enseñanza antes de la práctica
+
+- **Alternativa considerada:** mantener la app 100 % de práctica (Leitner + multiple-choice) sin componente teórico, o añadir un campo `teaching` por ejercicio.
+- **Decisión:** introducir una entidad **Topic** (slug, nivel CEFR, secciones tipadas Form / Use / Examples / Note) que agrupa N ejercicios mediante `lessonIds`, replicando el modelo pedagógico de [test-english.com/grammar-points](https://test-english.com/grammar-points/contents/).
+- **Justificación:**
+  - Hoyos (2024) recomienda anclar la UX al contexto y reforzar el aprendizaje con explicaciones explícitas, no solo drill repetitivo.
+  - Una práctica sin teoría previa convierte la app en memorización ciega; un curso A1 real combina explicación + ejemplos + ejercicios.
+  - Un Topic permite reutilizar la teoría entre N ejercicios sin duplicarla en cada uno y abre la puerta a niveles A2/B1 sin rediseño (`level` queda como discriminador).
+- **Costo asumido:** un store IndexedDB adicional (`topics`) y migración v1 → v2.
+
+### 2.8 Tarjetas por sujeto en lugar de tablas HTML
+
+- **Alternativa considerada:** usar `<table>` con columnas Sujeto / Afirmativa / Negativa / Pregunta, igual que test-english.com.
+- **Decisión:** **CSS Grid de tarjetas por sujeto** que reflowea de 1 columna (móvil) a 2 (≥600 px) y a 3 (≥900 px). Cada tarjeta lleva el sujeto en un `<h4>` y las tres formas con prefijos visuales (✅ afirmativa, ❌ negativa, ❓ pregunta).
+- **Justificación:**
+  - Una tabla de 4 columnas en un viewport de 320–360 px obliga a scroll horizontal, viola la promesa mobile-first y rompe la legibilidad del propio contenido pedagógico.
+  - El patrón "una tarjeta por sujeto" es semánticamente equivalente y se descompone naturalmente en stack vertical sin perder la asociación visual entre sujeto y formas.
+  - Los emojis como prefijo aportan reconocimiento inmediato de la función (afirmar / negar / preguntar) sin depender de encabezados de columna que desaparecen al apilar.
+- **Trade-off:** sacrificamos la densidad visual horizontal de la tabla a cambio de robustez móvil — coherente con la prioridad de la Etapa 2 (smartphones rurales como dispositivo principal).
+
+### 2.9 Enseñanza no afecta Leitner ni gamificación
+
+- **Decisión:** leer un Topic (entrar a la pantalla, ver Form/Use/Examples) **no otorga puntos**, **no actualiza cajas Leitner** ni **registra streak**. Solo responder ejercicios afecta el progreso.
+- **Justificación:** preservar la integridad del spaced repetition. Si la lectura sumara puntos, los estudiantes podrían "farmear" puntos sin practicar realmente, distorsionando los datos de progreso que el sistema usa para programar revisiones.
+
+### 2.10 Cinco formatos de lección con campo `format`
+
+- **Decisión:** cada lección lleva un campo opcional `format` ∈ `{ 'multiple-choice' | 'true-false' | 'fill-blank' | 'word-order' | 'matching' }`. Default `'multiple-choice'` para retro-compatibilidad. El renderer en `app.js` despacha por formato a través de cuatro funciones internas (`renderQuestion`, `bindAnswerHandlers`, `evaluateAnswer`, `applyAnswerFeedback`).
+- **Justificación pedagógica:**
+  - **Multiple-choice** sigue siendo la base — barata, escalable, buena para distinciones semánticas con distractores que enseñan.
+  - **True/False** es ideal para reglas gramaticales y "spot the rule" (ej. distinguir `mustn't` de `don't have to`). Costo cero, decisión binaria rápida.
+  - **Fill-in-the-blank** activa **recall** en vez de solo reconocimiento — pedagógicamente más fuerte que MC para conjugaciones donde la respuesta es inequívoca (`I ___ a student` → `am`).
+  - **Word-order** entrena **sintaxis**, no solo léxico. Único formato apto para condicionales, past perfect, voz pasiva y reported speech con la oración completa visible.
+  - **Matching** es eficiente para vocabulario: una sola lección cubre 4-6 palabras del mismo topic.
+- **Justificación técnica:**
+  - El motor Leitner sigue siendo format-agnóstico (`processAnswer(id, isCorrect)`). Cualquier formato nuevo solo necesita producir un boolean.
+  - **No requiere bump de `DB_VERSION`** — los nuevos campos (`format`, `acceptedAnswers`, `tokens`, `pairs`, `statement`, `correctAnswer`, `instruction`) son data-level y opcionales por formato. El patrón idempotente de `DB.init()` propaga la migración del seed sin tocar el progreso del usuario.
+  - **Sin nuevos archivos JS** — todos los renderers viven en `app.js` para no inflar el shell ni reordenar el `<script>` order.
+- **Validación tolerante en fill-blank:** el helper `normalizeAnswer()` aplica `lowercase + trim + colapso de espacios + remoción de acentos (NFD)` antes de comparar. Cada lección declara `acceptedAnswers[]` con todas las variantes válidas (`am` / `i'm` / `i am`). **Justificación:** el target es A1 rural en Android gama baja, donde el teclado/autocorrector inserta mayúsculas y la fricción de tipear castigaría injustamente respuestas correctas.
+- **Migración del corpus:** se rebalanceó agresivamente. De 120 lecciones, **96 quedan en multiple-choice**, **10 fill-blank** (verb-to-be, past simple regular/irregular, past perfect), **5 word-order** (cada tipo de condicional + reported speech), **4 true-false** (modales/deducción) y **5 matching** (un topic de vocabulario por lección). **IDs preservados** para no romper el progreso Leitner; las 5 lecciones de matching usan IDs nuevos `mat-001..mat-005` y conviven con las `voc-*` originales.
+
 ## 3. Decisiones de alcance
 
-### 3.1 Solo 10 ejercicios semilla
+### 3.1 ~25 ejercicios semilla agrupados en 13 topics A1
 
-Suficientes para mostrar el ciclo completo del sistema Leitner (5 cajas, repetición espaciada) sin diluir el foco de la demostración. Para producción, se aprovisionarían cientos de ejercicios desde el servidor remoto opcional.
+Suficientes para mostrar el ciclo completo del sistema Leitner (5 cajas, repetición espaciada), el patrón Form / Use / Examples de los topics y la práctica filtrada por tema. Para producción, se aprovisionarían cientos de ejercicios y topics A2/B1 desde el servidor remoto opcional.
 
 ### 3.2 Sin autenticación
 

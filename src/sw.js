@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v12';
 const CACHE_NAME = `aprende-ingles-${CACHE_VERSION}`;
 
 const APP_SHELL = [
@@ -10,7 +10,9 @@ const APP_SHELL = [
   './js/db.js',
   './js/leitner.js',
   './js/gamification.js',
+  './js/onboarding.js',
   './js/seed-data.js',
+  './js/seed-topics.js',
   './assets/icons/icon-192.svg',
   './assets/icons/icon-512.svg'
 ];

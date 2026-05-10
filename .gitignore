@@ -18,3 +18,4 @@ node_modules/
 # Salida de pruebas / coverage
 coverage/
 .nyc_output/
+tests/screenshots-responsive/

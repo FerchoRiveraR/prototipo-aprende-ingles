@@ -11,15 +11,17 @@
  *
  * Stores definidos:
  *   - lessons:       contenido educativo (sembrado al primer arranque)
+ *   - topics:        lecciones de teoría que agrupan ejercicios (form/use/examples)
  *   - progress:      estado Leitner por ejercicio (caja, próximo review, etc.)
  *   - settings:      perfil del estudiante (puntos, racha, nivel)
  *   - achievements:  logros desbloqueados
  */
 const DB_NAME = 'AprendeIngles';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const STORES = {
   LESSONS: 'lessons',
+  TOPICS: 'topics',
   PROGRESS: 'progress',
   SETTINGS: 'settings',
   ACHIEVEMENTS: 'achievements'
@@ -42,6 +44,18 @@ function openDB() {
         const lessons = db.createObjectStore(STORES.LESSONS, { keyPath: 'id' });
         lessons.createIndex('category', 'category', { unique: false });
         lessons.createIndex('type', 'type', { unique: false });
+        lessons.createIndex('topicId', 'topicId', { unique: false });
+      } else {
+        // Migración v1 → v2: añadir índice topicId si falta.
+        const tx = event.target.transaction;
+        const lessons = tx.objectStore(STORES.LESSONS);
+        if (!lessons.indexNames.contains('topicId')) {
+          lessons.createIndex('topicId', 'topicId', { unique: false });
+        }
+      }
+      if (!db.objectStoreNames.contains(STORES.TOPICS)) {
+        const topics = db.createObjectStore(STORES.TOPICS, { keyPath: 'id' });
+        topics.createIndex('level', 'level', { unique: false });
       }
       if (!db.objectStoreNames.contains(STORES.PROGRESS)) {
         const progress = db.createObjectStore(STORES.PROGRESS, { keyPath: 'lessonId' });
@@ -95,6 +109,9 @@ async function count(storeName) {
 
 const DEFAULT_PROFILE = {
   id: 'profile',
+  name: '',
+  avatar: '🧑‍🎓',
+  onboarded: false,
   points: 0,
   streak: 0,
   level: 1,
@@ -108,21 +125,36 @@ const DB = {
   async init() {
     await openDB();
 
-    // Sembrar lecciones la primera vez
-    const lessonCount = await count(STORES.LESSONS);
-    if (lessonCount === 0 && typeof SEED_LESSONS !== 'undefined') {
-      console.log('[DB] Sembrando ejercicios iniciales…');
+    // Sembrar / actualizar lecciones (idempotente: añade nuevas, refresca existentes,
+    // crea progreso solo para las que aún no lo tienen).
+    if (typeof SEED_LESSONS !== 'undefined') {
       const now = Date.now();
+      let added = 0;
+      let refreshed = 0;
       for (const lesson of SEED_LESSONS) {
+        const existingProgress = await get(STORES.PROGRESS, lesson.id);
         await put(STORES.LESSONS, lesson);
-        await put(STORES.PROGRESS, {
-          lessonId: lesson.id,
-          box: 1,
-          lastSeen: null,
-          nextReview: now,
-          attempts: 0,
-          correct: 0
-        });
+        if (!existingProgress) {
+          await put(STORES.PROGRESS, {
+            lessonId: lesson.id,
+            box: 1,
+            lastSeen: null,
+            nextReview: now,
+            attempts: 0,
+            correct: 0
+          });
+          added += 1;
+        } else {
+          refreshed += 1;
+        }
+      }
+      if (added > 0) console.log(`[DB] Sembrados ${added} ejercicios nuevos (${refreshed} ya existían).`);
+    }
+
+    // Sembrar / actualizar topics (siempre regrabamos para que cambios editoriales se reflejen).
+    if (typeof SEED_TOPICS !== 'undefined') {
+      for (const topic of SEED_TOPICS) {
+        await put(STORES.TOPICS, topic);
       }
     }
 
@@ -136,6 +168,10 @@ const DB = {
   // Lecciones ----------------------------------------------------
   async getLesson(id) { return get(STORES.LESSONS, id); },
   async getAllLessons() { return getAll(STORES.LESSONS); },
+
+  // Topics -------------------------------------------------------
+  async getTopic(id) { return get(STORES.TOPICS, id); },
+  async getAllTopics() { return getAll(STORES.TOPICS); },
 
   // Progreso -----------------------------------------------------
   async getProgress(lessonId) { return get(STORES.PROGRESS, lessonId); },
