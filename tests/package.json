@@ -1,0 +1,13 @@
+{
+  "name": "prototipo-luis-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Script de validación y captura automática de evidencias del prototipo con Playwright",
+  "scripts": {
+    "validate": "node validate.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.48.0"
+  }
+}
